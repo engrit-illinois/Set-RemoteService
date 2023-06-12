@@ -83,6 +83,10 @@ function Set-RemoteService {
 			
 			function Set-StartType($params) {
 				if($StartType) {
+					# "StartType" is the canonical property name, in both PS 7 and 5.1. "StartupType" is an alias only in PS 7. And "StartMode" is not a property alias.
+					# However "-StartupType" is the canonical _parameter_ name for *-Service cmdlets in both 7 and 5.1. "-StartMode" is an alias in both PS 7 and 5.1. And "StartType" is an alias only in PS 7.
+					# So, to be safe in both PS 7 and 5.1, always reference the "StartType" property, and always use the "StartupType" parameter.
+					# Additionally, the value "AutomaticDelayedStart" is only available PS 7, where it _really_ means StartType = Automatic and DelayedAutoStart = True. DelayedAutoStart does not appear to be exposed at all in PS 5.1.
 					$params.StartupType = $StartType
 					
 					try {
