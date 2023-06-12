@@ -47,11 +47,22 @@ function Set-RemoteService {
 		log "Getting computer names from AD..."
 		$allResults = @()
 		$ComputerNameQuery | ForEach-Object {
-			$results = Get-ADComputer -SearchBase $SearchBase -Filter "name -like `"$query`"" -Properties *
+			$results = Get-ADComputer -SearchBase $SearchBase -Filter "name -like `"$_`"" -Properties *
 			$allResults += @($results)
 		}
-		log "Computer names:" -L 1
-		log $allResults -L 2
+		if($allResults) {
+			if($allResults.count -lt 0) {
+				log "No matching computers found in AD!" -L 1
+			}
+			else {
+				log "Computer names:" -L 1
+				log $allResults -L 2
+			}
+		}
+		else {
+			log "No matching computers found in AD!" -L 1
+		}
+		
 		$allResults
 	}
 	
@@ -148,8 +159,10 @@ function Set-RemoteService {
 	
 	function Do-Stuff {
 		$comps = Get-Comps
-		if(Confirm-Continue) {
-			$states = Set-ServiceOnComps $comps
+		if($comps) {
+			if(Confirm-Continue) {
+				$states = Set-ServiceOnComps $comps
+			}
 		}
 	}
 	
