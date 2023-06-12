@@ -67,7 +67,7 @@ function Set-RemoteService {
 	}
 	
 	function Set-ServiceOnComp($comp) {
-		Invoke-Command -ComputerName $comp -ArgumentList $Service,$Status,$StartType -ScriptBlock {
+		Invoke-Command -ComputerName $comp.Name -ArgumentList $Service,$Status,$StartType -ScriptBlock {
 			param(
 				[string]$Service,
 				[string]$Status,
@@ -110,7 +110,7 @@ function Set-RemoteService {
 		
 		$comps | ForEach-Object {
 			$comp = $_
-			log $comp -L 1
+			log $comp.Name -L 1
 			$state = Set-ServiceOnComp $comp
 			
 			log "Initial state:" -L 2
@@ -142,15 +142,15 @@ function Set-RemoteService {
 				$input = Read-Host
 				if($input.ToLower() -eq "y") {
 					$confirmed = $true
-					log "User confirmed. Continuing."
+					log "User confirmed. Continuing." -L 1
 				}
 				else {
-					log "User did not confirm. Aborting."
+					log "User did not confirm. Aborting." -L 1
 				}
 			}
 		}
 		else {
-			log "-Status and -StartType are both unspecified. No changes will be made."
+			log "-Status and -StartType are both unspecified. No changes will be made." -L 1
 			$confirmed = $true
 		}
 		
