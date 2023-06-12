@@ -8,13 +8,15 @@ function Set-RemoteService {
 		[Parameter(Mandatory=$true)]
 		[string]$Service,
 		
-		[ValidateSet("Stopped","Started")]
+		[ValidateSet("Stopped","Running")]
 		[string]$Status,
 		
 		[ValidateSet("Automatic","AutomaticDelayedStart","Disabled","Manual")]
 		[string]$StartType,
 		
-		[switch]$Confirm
+		[switch]$Confirm,
+		
+		[switch]$PassThru
 	)
 	
 	function log {
@@ -67,7 +69,8 @@ function Set-RemoteService {
 	}
 	
 	function Set-ServiceOnComp($comp) {
-		Invoke-Command -ComputerName $comp.Name -ArgumentList $Service,$Status,$StartType -ScriptBlock {
+		
+		$scriptBlock = {
 			param(
 				[string]$Service,
 				[string]$Status,
@@ -78,29 +81,156 @@ function Set-RemoteService {
 				Get-Service -Name $Service | Select *
 			}
 			
-			function Set-ServiceOnComp {
-				if($Status -or $StartupType) {
-					$params = @{
-						Name = $Service
+			function Set-StartType($params) {
+				if($StartType) {
+					$params.StartupType = $StartType
+					
+					try {
+						$result = Set-Service @params
 					}
-					if($Status) {
-						$params.Status = $Status
+					catch {
+						$err = $_
 					}
-					if($StartupType) {
-						$params.StartType = $StartType
+					
+					[PSCustomObject]@{
+						Result = $result
+						Error = $err
+						ErrorMsg = $err.Exception.Message
 					}
+				}
+			}
 			
-					Set-Service @params
+			function Set-Status {
+				if($Status) {
+					$params.Status = $Status
+					
+					try {
+						$result = Set-Service @params
+					}
+					catch {
+						$err = $_
+					}
+					
+					if($err) {
+						if(
+							($Status -eq "Stopped") -and
+							($err.Exception.Message -like "*Cannot stop service * because it is dependent on other services*")
+						) {
+						
+							# Set-Service in PS 5.1 doesn't have a -Force parameter, so we'll have to do it manually with Stop-Service
+							try {
+								$stopResult = Stop-Service -Name $Service -Force -PassThru
+							}
+							catch {
+								$stopErr = $_
+							}
+							
+							$result = $stopResult
+							$err = $stopErr
+						}
+					}
+					
+					[PSCustomObject]@{
+						Result = $result
+						Error = $err
+						ErrorMsg = $err.Exception.Message
+					}
+				}
+			}
+			
+			function Set-ServiceOnComp {
+				$params = @{
+					Name = $Service
+					ErrorAction = "Stop"
+					PassThru = $true
+				}
+				
+				# Doing these separately because it makes the logic simpler due to changing the fact that changing the StartType is simple, while stopping a service can run into issues and needs more logic.
+				$startTypeResult = Set-StartType $params
+				$statusResult = Set-Status
+				
+				[PSCustomObject]@{
+					StartTypeResult = $startTypeResult
+					StartTypeError = $startTypeResult.Error
+					StartTypeErrorMsg = $startTypeResult.ErrorMsg
+					StatusResult = $statusResult
+					StatusError = $statusResult.Error
+					StatusErrorMsg = $statusResult.ErrorMsg
 				}
 			}
 							
-			$state1 = Get-ServiceState
-			#Set-ServiceOnComp
-			$state2 = Get-ServiceState
+			$initialState = Get-ServiceState
+			$result = Set-ServiceOnComp
+			$endState = Get-ServiceState
 			
-			[PSCustomObject]@{
-				State1 = $state1
-				State2 = $state2
+			$result | Add-Member -NotePropertyName "InitialState" -NotePropertyValue $initialState
+			$result | Add-Member -NotePropertyName "EndState" -NotePropertyValue $endState
+			
+			$result
+		}
+		
+		try {
+			$state = Invoke-Command -ComputerName $comp.Name -ArgumentList $Service,$Status,$StartType -ScriptBlock $scriptBlock -ErrorAction "Stop"
+		}
+		catch {
+			$err = $_
+		}
+		
+		[PSCustomObject]@{
+			Name = $comp.Name
+			InitialState = $state.InitialState
+			InitialStartType = Translate-State "StartType" $state.InitialState.StartType
+			InitialStatus = Translate-State "Status" $state.InitialState.Status
+			StartTypeResultState = $state.StartTypeResult
+			StartTypeResultStartType = Translate-State "StartType" $state.StartTypeResult.StartType
+			StartTypeResultStatus = Translate-State "Status" $state.StartTypeResult.Status
+			StatusResultState = $state.StatusResult
+			StatusResultStartType = Translate-State "StartType" $state.StatusResult.StartType
+			StatusResultStatus = Translate-State "Status" $state.StatusResult.Status
+			EndState = $state.EndState
+			EndStartType = Translate-State "StartType" $state.EndState.StartType
+			EndStatus = Translate-State "Status" $state.EndState.Status
+			InvokeError = $err
+			InvokeErrorMsg = $err.Exception.Message
+			StartTypeError = $state.StartTypeError
+			StartTypeErrorMsg = $state.StartTypeErrorMsg
+			StatusError = $state.StatusError
+			StatusErrorMsg = $state.StausErrorMsg
+		}
+	}
+	
+	function Translate-State($type, $value) {
+		if($value) {
+			if($value -is [int]) {
+				switch($type) {
+					"StartType" {
+						# https://learn.microsoft.com/en-us/dotnet/api/system.serviceprocess.servicestartmode?view=dotnet-plat-ext-7.0
+						switch($value) {
+							0 { "Boot" }
+							1 { "System" }
+							2 { "Automatic" }
+							3 { "Manual" }
+							4 { "Disabled" }
+							default { "Unrecognized value" }
+						}
+					}
+					"Status" {
+						# https://learn.microsoft.com/en-us/dotnet/api/system.serviceprocess.servicecontrollerstatus?view=dotnet-plat-ext-7.0
+						switch($value) {
+							1 { "Stopped" }
+							2 { "StartPending" }
+							3 { "StopPending" }
+							4 { "Running" }
+							5 { "ContinuePending" }
+							6 { "PausePending" }
+							7 { "Paused" }
+							default { "Unrecognized value" }
+						}
+					}
+				}
+			}
+			else {
+				$value
 			}
 		}
 	}
@@ -111,19 +241,7 @@ function Set-RemoteService {
 		$comps | ForEach-Object {
 			$comp = $_
 			log $comp.Name -L 1
-			$state = Set-ServiceOnComp $comp
-			
-			log "Initial state:" -L 2
-			log "Status: `"$($state.State1.Status)`"" -L 3
-			log "StartType: `"$($state.State1.StartType)`"" -L 3
-			log "Desired state:" -L 2
-			log "Status: `"$Status`"" -L 3
-			log "StartType: `"$StartType`"" -L 3
-			log "Final state:" -L 2
-			log "Status: `"$($state.State2.Status)`"" -L 3
-			log "StartType: `"$($state.State2.StartType)`"" -L 3
-			
-			$state
+			Set-ServiceOnComp $comp
 		}
 	}
 	
@@ -133,19 +251,21 @@ function Set-RemoteService {
 		if($Status -or $StartType) {
 			if($Confirm) {
 				log "-Confirm was specified. Continuing." -L 1
+				$confirmed = $true
 			}
 			else {
+				log "Service: `"$Service`"" -L 1
 				log "Desired state:" -L 1
 				log "Status: `"$Status`"" -L 2
 				log "StartType: `"$StartType`"" -L 2
-				log "Are you sure you want to continue? Enter 'Y' to confirm" -L 1 -NoNewLine
+				log "Are you sure you want to continue? Enter 'Y' to confirm: " -L 1 -NoNewLine
 				$input = Read-Host
 				if($input.ToLower() -eq "y") {
+					log "User confirmed. Continuing." -L 2
 					$confirmed = $true
-					log "User confirmed. Continuing." -L 1
 				}
 				else {
-					log "User did not confirm. Aborting." -L 1
+					log "User did not confirm. Aborting." -L 2
 				}
 			}
 		}
@@ -157,11 +277,22 @@ function Set-RemoteService {
 		$confirmed
 	}
 	
+	function Report-States($states) {
+		$output = $states | Select Name,InitialStatus,InitialStartType,EndStatus,EndStartType,InvokeErrorMsg,StartTypeErrorMsg,StatusErrorMsg | Sort Name | Format-Table * | Out-String
+		Write-Host $output
+	}
+	
 	function Do-Stuff {
 		$comps = Get-Comps
 		if($comps) {
 			if(Confirm-Continue) {
 				$states = Set-ServiceOnComps $comps
+				if($states) {
+					Report-States $states
+				}
+				if($PassThru) {
+					$states
+				}
 			}
 		}
 	}
